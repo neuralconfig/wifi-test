@@ -35,7 +35,7 @@ class WiFiTester:
     def setup_logging(self):
         """Set up logging configuration."""
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,  # Changed from INFO to DEBUG for more verbose output
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler("wifi_test.log"),
@@ -43,27 +43,30 @@ class WiFiTester:
             ]
         )
         self.logger = logging.getLogger(__name__)
+        self.logger.info("Wi-Fi Test Tool initialized")
     
     def run_command(self, command: List[str], timeout: int = 30) -> Dict[str, Any]:
         """
         Run a shell command and return the result.
-        
+
         Args:
             command: List of command and arguments
             timeout: Timeout in seconds
-            
+
         Returns:
             Dictionary containing success status, stdout, stderr, and return code
         """
-        self.logger.debug(f"Running command: {' '.join(command)}")
-        
+        cmd_str = ' '.join(command)
+        self.logger.debug(f"Running command: {cmd_str}")
+
         result = {
             "success": False,
             "stdout": "",
             "stderr": "",
-            "returncode": -1
+            "returncode": -1,
+            "command": cmd_str
         }
-        
+
         try:
             process = subprocess.run(
                 command,
@@ -71,29 +74,78 @@ class WiFiTester:
                 text=True,
                 timeout=timeout
             )
-            
+
             result["stdout"] = process.stdout
             result["stderr"] = process.stderr
             result["returncode"] = process.returncode
             result["success"] = process.returncode == 0
-            
+
+            # Log stdout for debugging (but truncate if very long)
+            if process.stdout:
+                stdout_log = process.stdout if len(process.stdout) < 500 else process.stdout[:500] + "... [truncated]"
+                self.logger.debug(f"Command stdout: {stdout_log}")
+
             if not result["success"]:
                 self.logger.warning(f"Command failed with return code {process.returncode}")
+                self.logger.warning(f"Command: {cmd_str}")
                 self.logger.warning(f"stderr: {process.stderr}")
-        
+
         except subprocess.TimeoutExpired:
-            self.logger.error(f"Command timed out after {timeout} seconds")
+            self.logger.error(f"Command timed out after {timeout} seconds: {cmd_str}")
             result["stderr"] = f"Command timed out after {timeout} seconds"
-        
+
         except Exception as e:
-            self.logger.error(f"Error executing command: {str(e)}")
+            self.logger.error(f"Error executing command: {cmd_str}")
+            self.logger.error(f"Error details: {str(e)}")
             result["stderr"] = str(e)
-        
+
         return result
     
     def check_root(self) -> bool:
         """Check if the script is running with root privileges."""
-        return os.geteuid() == 0
+        is_root = os.geteuid() == 0
+        if not is_root:
+            self.logger.error("This script must be run as root (sudo)")
+        return is_root
+
+    def check_wifi_interfaces(self) -> List[str]:
+        """Check for available wireless interfaces and return a list of them."""
+        self.logger.info("Checking for available wireless interfaces...")
+
+        # Try using iw to list interfaces
+        iw_result = self.run_command(["iw", "dev"])
+        interfaces = []
+
+        if iw_result["success"]:
+            # Parse the output to find interface names
+            lines = iw_result["stdout"].split('\n')
+            for line in lines:
+                if "Interface" in line:
+                    # Extract the interface name
+                    interface = line.split("Interface")[1].strip()
+                    interfaces.append(interface)
+
+        if not interfaces:
+            # Fallback to using ip link if iw didn't find any
+            ip_result = self.run_command(["ip", "link", "show"])
+            if ip_result["success"]:
+                lines = ip_result["stdout"].split('\n')
+                for line in lines:
+                    if ":" in line and "state" in line:
+                        # This line likely contains an interface name
+                        # Extract the interface name (between the number and the colon)
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            interface = parts[1].strip()
+                            if "wlan" in interface or "wlp" in interface or "wl" in interface:
+                                interfaces.append(interface)
+
+        if interfaces:
+            self.logger.info(f"Found wireless interfaces: {', '.join(interfaces)}")
+        else:
+            self.logger.warning("No wireless interfaces found!")
+
+        return interfaces
     
     def set_mac_address(self) -> bool:
         """Set the MAC address of the wireless interface."""
@@ -124,60 +176,154 @@ class WiFiTester:
     
     def connect_to_wifi(self) -> bool:
         """Connect to the specified Wi-Fi network."""
-        self.logger.info(f"Connecting to SSID: {self.ssid}")
-        
+        self.logger.info(f"Connecting to SSID: {self.ssid} using device {self.device}")
+
+        # Check if the wireless interface exists
+        iw_dev_result = self.run_command(["iw", "dev"])
+        if self.device not in iw_dev_result["stdout"]:
+            self.logger.error(f"Wireless interface {self.device} not found!")
+            self.logger.debug(f"Available interfaces: {iw_dev_result['stdout']}")
+            return False
+
+        # Print details of the interface
+        if_details = self.run_command(["ip", "link", "show", self.device])
+        self.logger.debug(f"Interface details before connection: {if_details['stdout']}")
+
         # First, make sure NetworkManager doesn't interfere
-        self.run_command(["nmcli", "radio", "wifi", "off"])
+        self.logger.debug("Disabling NetworkManager for wifi")
+        nm_result = self.run_command(["nmcli", "radio", "wifi", "off"])
+        if not nm_result["success"]:
+            self.logger.warning("Failed to disable NetworkManager, continuing anyway")
         time.sleep(1)
-        
+
         # Kill any existing wpa_supplicant processes for this interface
+        self.logger.debug(f"Killing any existing wpa_supplicant processes for {self.device}")
         self.run_command(["pkill", "-f", f"wpa_supplicant.*{self.device}"])
         time.sleep(1)
-        
+
+        # Ensure the interface is up
+        self.logger.debug(f"Making sure interface {self.device} is up")
+        self.run_command(["ip", "link", "set", self.device, "up"])
+        time.sleep(1)
+
         # Generate wpa_supplicant configuration
+        self.logger.debug("Generating wpa_supplicant configuration")
         wpa_config = f"""ctrl_interface=/var/run/wpa_supplicant
 network={{
     ssid="{self.ssid}"
     psk="{self.password}"
+    key_mgmt=WPA-PSK
+    scan_ssid=1
 }}
 """
-        with open("wpa_temp.conf", "w") as f:
+        wpa_conf_path = os.path.abspath("./wpa_temp.conf")
+        with open(wpa_conf_path, "w") as f:
             f.write(wpa_config)
-        
-        # Start wpa_supplicant
+
+        self.logger.debug(f"wpa_supplicant config written to {wpa_conf_path}")
+
+        # Check for existing wpa_supplicant processes
+        ps_result = self.run_command(["ps", "aux", "|", "grep", "wpa_supplicant"])
+        self.logger.debug(f"Existing wpa_supplicant processes: {ps_result['stdout']}")
+
+        # Start wpa_supplicant in debug mode
+        self.logger.info("Starting wpa_supplicant...")
         wpa_result = self.run_command([
-            "wpa_supplicant", 
+            "wpa_supplicant",
+            "-d",  # Debug output
             "-B",  # Run in background
             "-i", self.device,  # Interface
-            "-c", "wpa_temp.conf"  # Config file
+            "-c", wpa_conf_path  # Config file
         ])
-        
+
         if not wpa_result["success"]:
-            self.logger.error("Failed to start wpa_supplicant")
-            return False
-        
+            self.logger.error(f"Failed to start wpa_supplicant: {wpa_result['stderr']}")
+            # Try again with verbose output to see more details
+            self.logger.info("Trying again with verbose output...")
+            wpa_verbose = self.run_command([
+                "wpa_supplicant",
+                "-v",  # Verbose output
+                "-i", self.device,  # Interface
+                "-c", wpa_conf_path,  # Config file
+                "-B"   # Run in background
+            ])
+
+            if not wpa_verbose["success"]:
+                self.logger.error("Failed to start wpa_supplicant in verbose mode too")
+                self.logger.error(f"Error: {wpa_verbose['stderr']}")
+                return False
+
         self.logger.info("Started wpa_supplicant, waiting for connection...")
-        
-        # Wait for connection to be established
-        time.sleep(5)
-        
+
+        # Wait for connection to be established and check status several times
+        for attempt in range(1, 4):
+            self.logger.debug(f"Checking connection status (attempt {attempt}/3)...")
+            time.sleep(3)  # Wait between checks
+
+            # Check wpa_supplicant status
+            wpa_status = self.run_command([
+                "wpa_cli", "-i", self.device, "status"
+            ])
+            self.logger.debug(f"wpa_cli status: {wpa_status['stdout']}")
+
+            # Check if connected via iw
+            iw_result = self.run_command(["iw", "dev", self.device, "link"])
+            self.logger.debug(f"iw dev link: {iw_result['stdout']}")
+
+            if "Connected to" in iw_result["stdout"]:
+                self.logger.info(f"Successfully associated with AP: {iw_result['stdout']}")
+                break
+
+            if attempt == 3 and "Connected to" not in iw_result["stdout"]:
+                self.logger.warning("Could not confirm AP association after 3 attempts")
+
         # Get IP address via DHCP
+        self.logger.info("Obtaining IP address via DHCP...")
         dhcp_result = self.run_command(["dhclient", "-v", self.device], timeout=60)
-        
+
         if not dhcp_result["success"]:
-            self.logger.error("Failed to get IP address via DHCP")
-            return False
-        
-        self.logger.info("Successfully connected to Wi-Fi network")
-        
-        # Check connection status
+            self.logger.error(f"Failed to get IP address via DHCP: {dhcp_result['stderr']}")
+
+            # Check if we got an IP address anyway
+            ip_addr = self.run_command(["ip", "addr", "show", self.device])
+            if "inet " in ip_addr["stdout"]:
+                self.logger.info("IP address found despite dhclient failure, continuing...")
+            else:
+                self.logger.error("No IP address obtained, connection failed")
+                return False
+
+        # Display network interface information
+        self.logger.info("Checking network interface details...")
+        ip_addr = self.run_command(["ip", "addr", "show", self.device])
+        self.logger.info(f"IP address info: {ip_addr['stdout']}")
+
+        # Get current connection details
         iw_result = self.run_command(["iw", "dev", self.device, "link"])
+        iw_details = self.run_command(["iw", "dev", self.device, "info"])
+        self.logger.info(f"Connection details: {iw_result['stdout']}")
+        self.logger.debug(f"Interface details: {iw_details['stdout']}")
+
         if iw_result["success"] and "Connected to" in iw_result["stdout"]:
-            self.logger.info(f"Connection details: {iw_result['stdout']}")
+            self.logger.info(f"Successfully connected to SSID: {self.ssid}")
+
+            # Get signal strength
+            signal_check = self.run_command(["iw", "dev", self.device, "station", "dump"])
+            if "signal:" in signal_check["stdout"]:
+                signal_line = [line for line in signal_check["stdout"].split("\n") if "signal:" in line]
+                if signal_line:
+                    self.logger.info(f"Signal strength: {signal_line[0].strip()}")
+
             return True
         else:
-            self.logger.warning("Connected but link status is uncertain")
-            return True  # Still return True as we don't want to fail the process
+            self.logger.warning("Connection status uncertain - unable to confirm association with AP")
+
+            # Check if we have an IP address anyway
+            if "inet " in ip_addr["stdout"]:
+                self.logger.info("IP address obtained, assuming connection is functional")
+                return True
+            else:
+                self.logger.error("No AP association and no IP address, connection failed")
+                return False
     
     def ping_from_interface(self, target: str) -> Dict[str, Any]:
         """
@@ -236,22 +382,58 @@ network={{
     
     def run_test(self) -> bool:
         """Run the complete Wi-Fi test."""
+        self.logger.info("=== Starting Wi-Fi Connection Test ===")
+
+        # Check if running as root
         if not self.check_root():
-            self.logger.error("This script must be run as root")
+            self.logger.error("This script must be run as root (sudo)")
             return False
-        
+
         try:
+            # Check available Wi-Fi interfaces
+            available_interfaces = self.check_wifi_interfaces()
+            if self.device not in available_interfaces:
+                self.logger.warning(f"The specified interface {self.device} was not found in the available interfaces")
+                self.logger.info(f"Available interfaces: {', '.join(available_interfaces) if available_interfaces else 'None'}")
+                if available_interfaces and input(f"Use {available_interfaces[0]} instead? (y/n): ").lower() == 'y':
+                    self.device = available_interfaces[0]
+                    self.logger.info(f"Using interface {self.device} instead")
+                else:
+                    self.logger.error(f"Cannot proceed without a valid wireless interface")
+                    return False
+
+            # Check for required tools
+            self.logger.info("Checking for required tools...")
+            required_tools = ["iw", "wpa_supplicant", "dhclient", "ip"]
+            missing_tools = []
+
+            for tool in required_tools:
+                which_result = self.run_command(["which", tool])
+                if not which_result["success"]:
+                    missing_tools.append(tool)
+                    self.logger.error(f"Required tool not found: {tool}")
+
+            if missing_tools:
+                self.logger.error(f"Missing required tools: {', '.join(missing_tools)}")
+                self.logger.error("Please install these tools before continuing")
+                return False
+
             # Set MAC address
+            self.logger.info("=== Step 1: Setting MAC Address ===")
             if not self.set_mac_address():
+                self.logger.error("Failed to set MAC address, aborting test")
                 return False
-            
+
             # Connect to Wi-Fi
+            self.logger.info(f"=== Step 2: Connecting to SSID {self.ssid} ===")
             if not self.connect_to_wifi():
+                self.logger.error("Failed to connect to Wi-Fi network, aborting test")
                 return False
-            
+
             # Ping targets
+            self.logger.info(f"=== Step 3: Pinging Targets ===")
             ping_results = self.ping_all_targets()
-            
+
             # Print ping results
             print("\nPing Results:")
             print("============")
@@ -266,17 +448,23 @@ network={{
                             print(line)
                 else:
                     print(f"Error: {result['error']}")
-            
+
             # Disconnect
-            return self.disconnect()
-            
+            self.logger.info(f"=== Step 4: Disconnecting ===")
+            disconnect_result = self.disconnect()
+
+            self.logger.info("=== Wi-Fi Connection Test Complete ===")
+            return disconnect_result
+
         except KeyboardInterrupt:
             self.logger.info("Test interrupted by user")
             self.disconnect()
             return False
-        
+
         except Exception as e:
             self.logger.error(f"Error during test: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             self.disconnect()
             return False
 
@@ -311,25 +499,48 @@ def parse_arguments():
 
 def main():
     """Main function to run the Wi-Fi test tool."""
-    args = parse_arguments()
-    
-    # Split the ping targets string into a list
-    ping_targets = args.ping_targets.split(',')
-    
-    # Create and run the tester
-    tester = WiFiTester(
-        device=args.device,
-        ssid=args.ssid,
-        password=args.password,
-        mac=args.mac,
-        ping_targets=ping_targets,
-        ping_count=args.count
-    )
-    
-    success = tester.run_test()
-    
-    # Exit with appropriate code
-    sys.exit(0 if success else 1)
+    print("\nWi-Fi Connection Test Tool")
+    print("=========================\n")
+
+    try:
+        args = parse_arguments()
+
+        # Split the ping targets string into a list
+        ping_targets = args.ping_targets.split(',')
+
+        # Create and run the tester
+        tester = WiFiTester(
+            device=args.device,
+            ssid=args.ssid,
+            password=args.password,
+            mac=args.mac,
+            ping_targets=ping_targets,
+            ping_count=args.count
+        )
+
+        print(f"Starting test with the following parameters:")
+        print(f"  Device: {args.device}")
+        print(f"  SSID: {args.ssid}")
+        print(f"  MAC Address: {args.mac}")
+        print(f"  Ping Targets: {args.ping_targets}")
+        print(f"  Ping Count: {args.count}")
+        print("\nDetailed logs will be written to wifi_test.log\n")
+
+        success = tester.run_test()
+
+        if success:
+            print("\nWi-Fi test completed successfully!")
+        else:
+            print("\nWi-Fi test failed. Check wifi_test.log for details.")
+
+        # Exit with appropriate code
+        sys.exit(0 if success else 1)
+
+    except Exception as e:
+        print(f"\nError in main function: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
