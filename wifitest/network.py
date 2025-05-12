@@ -381,9 +381,8 @@ network={{
         Returns:
             True if successful, False otherwise
         """
-        # Get the IP address and gateway of the wireless interface
+        # Get the IP address of the wireless interface
         ip_info = run_command(["ip", "-j", "addr", "show", self.device], logger=self.logger)
-        gateway_info = run_command(["ip", "route", "show", "dev", self.device], logger=self.logger)
 
         try:
             # Extract IP address
@@ -413,24 +412,75 @@ network={{
                     device_ip = ip_match.group(1)
                     prefix = ip_match.group(2)
 
-            # Extract gateway using regex
-            gateway_match = re.search(r'default\s+via\s+([0-9.]+)', gateway_info["stdout"])
-            if gateway_match:
-                gateway = gateway_match.group(1)
-            else:
-                # If default gateway is not found, try extracting the first hop in the subnet
-                route_match = re.search(r'[0-9.]+/[0-9]+\s+via\s+([0-9.]+)', gateway_info["stdout"])
-                if route_match:
-                    gateway = route_match.group(1)
-
             if not device_ip:
                 if self.logger:
                     self.logger.error("Could not determine IP address for custom routing")
                 return False
 
+            # Get DHCP-provided gateway information (most reliable)
+            # Check for dhclient lease files - try various possible locations
+            lease_files = [
+                "/var/lib/dhcp/dhclient.leases",
+                "/var/lib/dhcp/dhclient.*.leases",
+                "/var/lib/dhclient/dhclient.leases",
+                f"/var/lib/dhcp/dhclient.{self.device}.leases"
+            ]
+
+            for lease_file in lease_files:
+                # Use ls to check if file exists because it might include wildcards
+                find_lease = run_command(["ls", "-1", lease_file], logger=self.logger)
+                if find_lease["success"]:
+                    files = find_lease["stdout"].strip().split('\n')
+                    for file in files:
+                        if file and file != "ls: cannot access":  # Valid file found
+                            lease_info = run_command(["cat", file], logger=self.logger)
+                            if lease_info["success"]:
+                                # Look for the most recent lease for our interface
+                                leases = lease_info["stdout"].split("lease {")
+                                for lease in reversed(leases):  # Start with most recent lease
+                                    if self.device in lease and "routers" in lease:
+                                        router_match = re.search(r'option routers ([0-9.]+);', lease)
+                                        if router_match:
+                                            gateway = router_match.group(1)
+                                            if self.logger:
+                                                self.logger.info(f"Found DHCP-provided gateway from {file}: {gateway}")
+                                            break
+                            if gateway:
+                                break
+                if gateway:
+                    break
+
+            # If no gateway from DHCP lease, try directly asking the dhclient process
             if not gateway:
-                # If no gateway found, assume first hop in network
-                # Calculate network address from IP and prefix
+                # Try getting dhclient configuration
+                dhclient_config = run_command(["dhclient", "-T", "-nw", "-1", self.device], logger=self.logger)
+                if dhclient_config["success"] and "router" in dhclient_config["stdout"]:
+                    router_match = re.search(r'router ([0-9.]+)', dhclient_config["stdout"])
+                    if router_match:
+                        gateway = router_match.group(1)
+                        if self.logger:
+                            self.logger.info(f"Found gateway from dhclient: {gateway}")
+
+            # If still no gateway, try looking at the route table
+            if not gateway:
+                # First check for default route
+                gateway_info = run_command(["ip", "route", "show", "dev", self.device], logger=self.logger)
+                gateway_match = re.search(r'default\s+via\s+([0-9.]+)', gateway_info["stdout"])
+                if gateway_match:
+                    gateway = gateway_match.group(1)
+                    if self.logger:
+                        self.logger.info(f"Found gateway from route table: {gateway}")
+                else:
+                    # If default gateway is not found, try extracting the first hop in the subnet
+                    route_match = re.search(r'[0-9.]+/[0-9]+\s+via\s+([0-9.]+)', gateway_info["stdout"])
+                    if route_match:
+                        gateway = route_match.group(1)
+                        if self.logger:
+                            self.logger.info(f"Found gateway as first hop: {gateway}")
+
+            # Last resort: guess gateway from IP address
+            if not gateway:
+                # If no gateway found, use standard gateway heuristics
                 octets = device_ip.split('.')
                 if len(octets) == 4 and prefix:
                     # For common /24 networks, try gateway at .1
@@ -440,9 +490,10 @@ network={{
                     elif int(prefix) == 16:
                         gateway = f"{octets[0]}.{octets[1]}.0.1"
                     else:
-                        if self.logger:
-                            self.logger.warning("Could not determine gateway. Assuming first IP in subnet.")
                         gateway = f"{octets[0]}.{octets[1]}.{octets[2]}.1"
+
+                    if self.logger:
+                        self.logger.warning(f"Could not determine gateway from DHCP. Guessing: {gateway}")
                 else:
                     if self.logger:
                         self.logger.error("Could not determine gateway for custom routing")
