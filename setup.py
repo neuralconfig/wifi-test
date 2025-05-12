@@ -1,10 +1,20 @@
 from setuptools import setup, find_packages
+import os
+import importlib.util
+
+# Use importlib to load module with dashes in filename
+spec = importlib.util.spec_from_file_location(
+    "wifi_test_cli", 
+    os.path.join(os.path.dirname(__file__), "wifi-test-cli.py")
+)
+wifi_test_cli = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wifi_test_cli)
 
 setup(
     name="wifitest",
     version="1.0.0",
     packages=find_packages(),
-    scripts=["wifi_test_cli.py"],
+    scripts=["wifi-test-cli.py"],
     
     # Metadata
     author="Neural Config",
@@ -32,7 +42,7 @@ setup(
     python_requires=">=3.6",
     install_requires=[],  # No special Python packages required
     
-    # Entry points
+    # Entry points for console scripts
     entry_points={
         "console_scripts": [
             "wifi-test=wifi_test_cli:main",

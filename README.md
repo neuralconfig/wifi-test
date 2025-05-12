@@ -58,7 +58,7 @@ You can also use the script directly without installation:
 
 ```bash
 cd wifi-test
-chmod +x wifi_test_cli.py
+chmod +x wifi-test-cli.py
 ```
 
 ## Usage
@@ -72,7 +72,7 @@ sudo wifi-test --device DEVICE --ssid SSID --password PASSWORD --mac MAC_ADDRESS
 Or if you didn't install the package:
 
 ```bash
-sudo ./wifi_test_cli.py --device DEVICE --ssid SSID --password PASSWORD --mac MAC_ADDRESS [OPTIONS]
+sudo ./wifi-test-cli.py --device DEVICE --ssid SSID --password PASSWORD --mac MAC_ADDRESS [OPTIONS]
 ```
 
 ### Required Arguments
@@ -131,6 +131,7 @@ The package is organized as follows:
 ```
 wifitest/
 ├── __init__.py              # Package initialization
+├── __main__.py              # For running as a module
 ├── wifi_tester.py           # Main WiFiTester class
 ├── interface.py             # WiFi interface management
 ├── network.py               # Network connection management
