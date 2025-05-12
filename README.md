@@ -107,13 +107,6 @@ The script provides detailed logging to help troubleshoot connection issues:
 
 If you're having trouble with connections, check the log file for detailed information about what's happening during each step of the connection process.
 
-## Demo Mode
-
-For testing without root privileges or actual hardware, use the `test_demo.py` script:
-
-```bash
-./test_demo.py --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 192.168.37.1,192.168.37.252 --count 3
-```
 
 ## How It Works
 
