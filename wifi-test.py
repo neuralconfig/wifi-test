@@ -255,61 +255,93 @@ network={{
 
         self.logger.info("Started wpa_supplicant, waiting for connection...")
 
-        # Wait for connection to be established and check status several times
-        for attempt in range(1, 4):
-            self.logger.debug(f"Checking connection status (attempt {attempt}/3)...")
-            time.sleep(3)  # Wait between checks
+        # Use this method to monitor and detect authentication issues before trying DHCP
+        time.sleep(2)  # Initial wait for wpa_supplicant to start
 
-            # Check wpa_supplicant status
+        # Check for authentication failures with a more aggressive approach to catch issues early
+        auth_failure = False
+        for attempt in range(1, 6):  # More attempts with shorter interval to catch failures quickly
+            self.logger.debug(f"Checking connection status (attempt {attempt}/5)...")
+
+            # Check wpa_supplicant output directly first (faster than waiting for logs)
             wpa_status = self.run_command([
                 "wpa_cli", "-i", self.device, "status"
             ])
             self.logger.debug(f"wpa_cli status: {wpa_status['stdout']}")
 
-            # Check for authentication failures in wpa_cli output
-            if "DISCONNECTED" in wpa_status["stdout"]:
-                # Check wpa_supplicant logs for error messages
-                wpa_log = self.run_command(["grep", "wpa_supplicant", "/var/log/syslog"])
-                self.logger.debug(f"wpa_supplicant syslog entries: {wpa_log['stdout']}")
+            # Immediately fail on specific authentication failure indicators
+            auth_fail_indicators = [
+                "WRONG_KEY", "HANDSHAKE_FAILED", "4WAY_HANDSHAKE_FAILED",
+                "ASSOCIATION_REJECT", "AUTHENTICATION_FAILED"
+            ]
 
-                # Check for common authentication failure patterns
-                if any(error in wpa_log["stdout"] for error in [
-                    "authentication with", "failed", "4-Way Handshake failed",
-                    "WRONG_KEY", "WPA:", "reason=15", "reason=3"
-                ]):
-                    self.logger.error("Authentication failed - Incorrect password")
-                    return False
+            if any(indicator in wpa_status["stdout"] for indicator in auth_fail_indicators):
+                self.logger.error(f"WPA authentication failure detected in status output")
+                auth_failure = True
+                break
 
-                # Alternative check with direct dmesg output
-                dmesg = self.run_command(["dmesg", "|", "grep", "wpa"])
-                if any(error in dmesg["stdout"] for error in [
-                    "authentication with", "failed", "4-Way Handshake failed"
-                ]):
-                    self.logger.error("Authentication failed - Incorrect password detected in dmesg")
-                    return False
+            # Also check current log output for immediate failures (dmesg is more real-time)
+            dmesg = self.run_command(["dmesg", "|", "grep", "-i", "wpa"])
+            self.logger.debug(f"dmesg wpa entries: {dmesg['stdout']}")
 
-            # Check if connected via iw
+            # Common authentication failure patterns in kernel messages
+            if any(error in dmesg["stdout"] for error in [
+                "authentication with", "failed", "4-Way Handshake failed",
+                "wrong password", "handshake timeout"
+            ]):
+                self.logger.error("Authentication failed - Detected in kernel logs")
+                auth_failure = True
+                break
+
+            # Check if connected successfully
             iw_result = self.run_command(["iw", "dev", self.device, "link"])
             self.logger.debug(f"iw dev link: {iw_result['stdout']}")
 
             if "Connected to" in iw_result["stdout"]:
                 self.logger.info(f"Successfully associated with AP: {iw_result['stdout']}")
-                break
+                # If we see successful connection, return true to proceed with DHCP
+                return True
 
-            # Additional authentication failure check
-            wpa_auth_check = self.run_command([
-                "journalctl", "-u", "wpa_supplicant", "--no-pager", "-n", "50"
-            ])
+            # Short wait between checks to catch early failures
+            time.sleep(2)
 
-            if any(error in wpa_auth_check["stdout"] for error in [
+        # If we have an explicit authentication failure, return immediately
+        if auth_failure:
+            self.logger.error("Authentication failed - Incorrect password or authentication issue")
+            # Stop wpa_supplicant to clean up
+            self.run_command(["pkill", "-f", f"wpa_supplicant.*{self.device}"])
+            return False
+
+        # If we reach here without connecting or explicit failure, try more aggressive log checking
+        self.logger.debug("Checking system logs for authentication issues...")
+
+        # Check multiple log sources for problems
+        log_sources = [
+            ["grep", "-i", "wpa_supplicant", "/var/log/syslog"],
+            ["journalctl", "-u", "wpa_supplicant", "--no-pager", "-n", "50"],
+            ["wpa_cli", "-i", self.device, "status"]
+        ]
+
+        for cmd in log_sources:
+            log_result = self.run_command(cmd)
+
+            # Look for authentication errors in the output
+            error_patterns = [
                 "authentication with", "failed", "4-Way Handshake failed",
-                "WRONG_KEY", "WPA:", "reason=15", "reason=3"
-            ]):
-                self.logger.error("Authentication failed - Incorrect password detected in journal")
+                "WRONG_KEY", "WPA:", "reason=15", "reason=3", "wrong password",
+                "timeout", "DISCONNECT", "HANDSHAKE", "unable to connect"
+            ]
+
+            if any(pattern in log_result["stdout"] for pattern in error_patterns):
+                self.logger.error(f"Authentication issue detected in logs")
                 return False
 
-            if attempt == 3 and "Connected to" not in iw_result["stdout"]:
-                self.logger.warning("Could not confirm AP association after 3 attempts")
+        # Final connection check before proceeding
+        iw_final = self.run_command(["iw", "dev", self.device, "link"])
+        if "Connected to" not in iw_final["stdout"]:
+            self.logger.warning("Could not confirm AP association")
+            # Return false to avoid trying DHCP if we can't confirm association
+            return False
 
         # Get IP address via DHCP
         self.logger.info("Obtaining IP address via DHCP...")
@@ -429,11 +461,15 @@ network={{
             if self.device not in available_interfaces:
                 self.logger.warning(f"The specified interface {self.device} was not found in the available interfaces")
                 self.logger.info(f"Available interfaces: {', '.join(available_interfaces) if available_interfaces else 'None'}")
-                if available_interfaces and input(f"Use {available_interfaces[0]} instead? (y/n): ").lower() == 'y':
+
+                # If available interfaces exist, automatically use the first one in non-interactive mode
+                if available_interfaces:
                     self.device = available_interfaces[0]
-                    self.logger.info(f"Using interface {self.device} instead")
+                    self.logger.info(f"INTERFACE_CHANGE: Automatically selecting interface {self.device}")
+                    print(f"NOTICE: Using available wireless interface {self.device} instead of the specified one")
                 else:
                     self.logger.error(f"Cannot proceed without a valid wireless interface")
+                    print("ERROR_CODE=NO_INTERFACE: No valid wireless interfaces found")
                     return False
 
             # Check for required tools
@@ -458,67 +494,35 @@ network={{
                 self.logger.error("Failed to set MAC address, aborting test")
                 return False
 
-            # Connect to Wi-Fi with password retry
+            # Connect to Wi-Fi
             self.logger.info(f"=== Step 2: Connecting to SSID {self.ssid} ===")
 
-            # Flag to track if incorrect password was detected
-            password_incorrect = False
-            max_retries = 3
-            retry_count = 0
+            # Attempt to connect
+            connection_result = self.connect_to_wifi()
 
-            while retry_count < max_retries:
-                if retry_count > 0:
-                    self.logger.info(f"Retry attempt {retry_count}/{max_retries-1}")
+            if not connection_result:
+                # Check logs to determine if it was a password issue for better error reporting
+                auth_failure = False
 
-                connection_result = self.connect_to_wifi()
-
-                if connection_result:
-                    # Connection successful
-                    break
-
-                # Check if it's likely a password issue by checking the log file
                 with open("wifi_test.log", "r") as log_file:
                     log_content = log_file.read()
 
                     # Check if the log contains authentication failure messages
                     if any(error in log_content for error in [
-                        "Authentication failed - Incorrect password",
-                        "4-Way Handshake failed",
-                        "WRONG_KEY",
-                        "authentication with"
+                        "Authentication failed", "Incorrect password",
+                        "4-Way Handshake failed", "WRONG_KEY",
+                        "authentication with", "auth", "handshake"
                     ]):
-                        password_incorrect = True
-                        self.logger.error(f"Password authentication failed for SSID: {self.ssid}")
+                        auth_failure = True
 
-                        # Prompt for a new password
-                        print(f"\n⚠️  Authentication failed. The password for '{self.ssid}' appears to be incorrect.")
-                        new_password = input("Enter the correct password (or press Enter to abort): ")
+                if auth_failure:
+                    self.logger.error(f"PASSWORD ERROR: Authentication failed for SSID '{self.ssid}' - incorrect password")
+                    # Return specific error code that can be checked by automation
+                    print(f"ERROR_CODE=AUTH_FAILURE: Incorrect password for network '{self.ssid}'")
+                else:
+                    self.logger.error(f"CONNECTION ERROR: Failed to connect to Wi-Fi network '{self.ssid}'")
+                    print(f"ERROR_CODE=CONN_FAILURE: Connection failed to network '{self.ssid}'")
 
-                        if not new_password:
-                            self.logger.error("User aborted after password failure")
-                            return False
-
-                        # Update the password and try again
-                        self.password = new_password
-                        self.logger.info(f"Retrying with new password")
-                        retry_count += 1
-
-                        # Make sure any existing connection attempts are cleaned up
-                        self.disconnect()
-                        time.sleep(2)
-                    else:
-                        # Not a password issue, some other connection problem
-                        self.logger.error("Failed to connect to Wi-Fi network, but not due to incorrect password")
-                        return False
-
-            # If we've exhausted all retries and still have password issues
-            if retry_count >= max_retries and password_incorrect:
-                self.logger.error(f"Failed to connect after {max_retries} password attempts")
-                print(f"\n❌ Failed to connect to '{self.ssid}' after {max_retries} password attempts.")
-                return False
-
-            if not connection_result:
-                self.logger.error("Failed to connect to Wi-Fi network, aborting test")
                 return False
 
             # Ping targets

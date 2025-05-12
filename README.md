@@ -15,8 +15,8 @@ A Python script for testing Wi-Fi connections with specific parameters. This too
 - Support for hidden networks
 - Signal strength reporting
 - Verification of successful connection
-- Incorrect password detection with interactive retry
-- Authentication failure diagnosis
+- Incorrect password detection with automatic error codes
+- Authentication failure diagnosis for automation tools
 
 ## Requirements
 
@@ -100,8 +100,8 @@ If the connection fails:
 1. Check `wifi_test.log` for detailed error messages
 2. Verify that the wireless interface exists and is working
 3. Ensure you have the correct SSID and password
-   - The tool will detect incorrect passwords and prompt for retries
-   - You can enter the correct password when prompted to retry the connection
+   - The tool will detect incorrect passwords and return an appropriate error code
+   - Authentication failures are detected early and reported with specific error messages
 4. Confirm that the MAC address is in the correct format
 5. Make sure all required tools are installed
 
@@ -109,10 +109,18 @@ If the connection fails:
 
 The tool specifically checks for authentication failures that indicate incorrect passwords:
 
-- If an authentication failure is detected, you'll be prompted to enter the correct password
-- You can retry up to 3 times with different passwords
-- If you press Enter without typing a password, the test will abort
+- If an authentication failure is detected, the script will exit with an error code
+- Error codes are prefixed with "ERROR_CODE=" for easy parsing by automation tools
 - The tool searches system logs and wpa_supplicant output to diagnose authentication failures
+- Authentication failures are detected before attempting DHCP to avoid timeouts
+
+### Error Codes
+
+The script produces specific error codes for automation systems:
+
+- `ERROR_CODE=AUTH_FAILURE`: Incorrect password for the Wi-Fi network
+- `ERROR_CODE=CONN_FAILURE`: General connection failure (not related to password)
+- `ERROR_CODE=NO_INTERFACE`: No valid wireless interface found
 
 ## License
 
