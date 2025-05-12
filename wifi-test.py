@@ -21,15 +21,29 @@ from typing import List, Dict, Any, Optional
 
 class WiFiTester:
     """Class for testing Wi-Fi connections with specific parameters."""
-    
+
     def __init__(self, device: str, ssid: str, password: str, mac: str,
-                 ping_targets: List[str], ping_count: int):
+                 ping_targets: List[str], ping_count: int,
+                 iperf_server: Optional[str] = None, iperf_port: int = 5201,
+                 iperf_protocol: str = 'tcp', iperf_duration: int = 10,
+                 iperf_bandwidth: str = '100M', iperf_parallel: int = 1,
+                 iperf_reverse: bool = False):
         self.device = device
         self.ssid = ssid
         self.password = password
         self.mac = mac
         self.ping_targets = ping_targets
         self.ping_count = ping_count
+
+        # iperf parameters
+        self.iperf_server = iperf_server
+        self.iperf_port = iperf_port
+        self.iperf_protocol = iperf_protocol
+        self.iperf_duration = iperf_duration
+        self.iperf_bandwidth = iperf_bandwidth
+        self.iperf_parallel = iperf_parallel
+        self.iperf_reverse = iperf_reverse
+
         self.setup_logging()
         
     def setup_logging(self):
@@ -454,11 +468,128 @@ network={{
     def ping_all_targets(self) -> List[Dict[str, Any]]:
         """Ping all specified targets and return results."""
         results = []
-        
+
         for target in self.ping_targets:
             results.append(self.ping_from_interface(target))
-        
+
         return results
+
+    def run_iperf_test(self) -> Dict[str, Any]:
+        """
+        Run an iperf bandwidth test to the specified server.
+
+        Returns:
+            Dictionary with test results, including success status and bandwidth values.
+        """
+        self.logger.info(f"Running iperf test to server {self.iperf_server}")
+
+        # Build the iperf command with appropriate parameters
+        iperf_cmd = ["iperf3", "-c", self.iperf_server, "-p", str(self.iperf_port),
+                     "-t", str(self.iperf_duration), "-J"]  # JSON output
+
+        # Add protocol-specific parameters
+        if self.iperf_protocol == 'udp':
+            iperf_cmd.extend(["-u", "-b", self.iperf_bandwidth])
+
+        # Add parallel streams if specified
+        if self.iperf_parallel > 1:
+            iperf_cmd.extend(["-P", str(self.iperf_parallel)])
+
+        # Add reverse direction if specified
+        if self.iperf_reverse:
+            iperf_cmd.append("-R")
+
+        # Force iperf to use the Wi-Fi interface by binding to its IP
+        # First, get the IP address of the Wi-Fi interface
+        ip_result = self.run_command(["ip", "-j", "addr", "show", "dev", self.device])
+
+        # Initialize with default result
+        result = {
+            "success": False,
+            "error": "Failed to run iperf test",
+            "protocol": self.iperf_protocol,
+            "duration": self.iperf_duration,
+            "bandwidth": "0",
+            "bandwidth_units": "bps"
+        }
+
+        if ip_result["success"]:
+            try:
+                # Parse IP address from JSON output if available
+                import json
+                ip_data = json.loads(ip_result["stdout"])
+
+                # Find IPv4 address
+                for addr_info in ip_data[0].get("addr_info", []):
+                    if addr_info.get("family") == "inet":  # IPv4
+                        device_ip = addr_info.get("local")
+                        if device_ip:
+                            iperf_cmd.extend(["-B", device_ip])
+                            self.logger.info(f"Binding iperf to interface IP: {device_ip}")
+                            break
+            except (json.JSONDecodeError, IndexError, KeyError) as e:
+                self.logger.warning(f"Failed to parse IP address from JSON: {str(e)}")
+                # Fallback to text parsing if JSON fails
+                ip_text = self.run_command(["ip", "addr", "show", "dev", self.device])
+                if ip_text["success"]:
+                    import re
+                    ip_match = re.search(r'inet\s+([0-9.]+)', ip_text["stdout"])
+                    if ip_match:
+                        device_ip = ip_match.group(1)
+                        iperf_cmd.extend(["-B", device_ip])
+                        self.logger.info(f"Binding iperf to interface IP: {device_ip}")
+
+        # Run the test
+        self.logger.debug(f"Running iperf command: {' '.join(iperf_cmd)}")
+        iperf_result = self.run_command(iperf_cmd, timeout=self.iperf_duration + 10)
+
+        if iperf_result["success"]:
+            try:
+                # Parse the JSON output
+                import json
+                data = json.loads(iperf_result["stdout"])
+
+                # Extract the relevant results
+                if 'end' in data:
+                    if self.iperf_protocol == 'tcp':
+                        # Get TCP stats
+                        if 'sum_received' in data['end']:
+                            bps = data['end']['sum_received']['bits_per_second']
+                            result["bandwidth"] = f"{bps/1000000:.2f}"
+                            result["bandwidth_units"] = "Mbps"
+                            result["success"] = True
+                        elif 'sum' in data['end']:
+                            bps = data['end']['sum']['bits_per_second']
+                            result["bandwidth"] = f"{bps/1000000:.2f}"
+                            result["bandwidth_units"] = "Mbps"
+                            result["success"] = True
+                    elif self.iperf_protocol == 'udp':
+                        # Get UDP stats
+                        if 'sum' in data['end']:
+                            bps = data['end']['sum']['bits_per_second']
+                            result["bandwidth"] = f"{bps/1000000:.2f}"
+                            result["bandwidth_units"] = "Mbps"
+                            result["jitter_ms"] = data['end']['sum'].get('jitter_ms', 0)
+                            result["lost_packets"] = data['end']['sum'].get('lost_packets', 0)
+                            result["total_packets"] = data['end']['sum'].get('packets', 0)
+                            if result["total_packets"] > 0:
+                                result["packet_loss_percent"] = (result["lost_packets"] / result["total_packets"]) * 100
+                            else:
+                                result["packet_loss_percent"] = 0
+                            result["success"] = True
+
+                # Save the raw output for debugging
+                result["raw_output"] = iperf_result["stdout"]
+
+            except Exception as e:
+                self.logger.error(f"Failed to parse iperf output: {str(e)}")
+                result["error"] = f"Failed to parse iperf output: {str(e)}"
+                result["raw_output"] = iperf_result["stdout"]
+        else:
+            result["error"] = iperf_result["stderr"]
+            self.logger.error(f"iperf test failed: {iperf_result['stderr']}")
+
+        return result
     
     def disconnect(self) -> bool:
         """Disconnect from the Wi-Fi network and clean up."""
@@ -559,27 +690,55 @@ network={{
 
                 return False
 
-            # Ping targets
-            self.logger.info(f"=== Step 3: Pinging Targets ===")
-            ping_results = self.ping_all_targets()
+            # Ping targets (if any are specified)
+            if self.ping_targets:
+                self.logger.info(f"=== Step 3: Pinging Targets ===")
+                ping_results = self.ping_all_targets()
 
-            # Print ping results
-            print("\nPing Results:")
-            print("============")
-            for result in ping_results:
-                print(f"\nTarget: {result['target']}")
-                print(f"Success: {result['success']}")
-                if result['success']:
-                    # Extract and print relevant ping statistics
-                    output_lines = result['output'].strip().split('\n')
-                    for line in output_lines:
-                        if any(x in line for x in ["packets transmitted", "min/avg/max", "packet loss"]):
-                            print(line)
+                # Print ping results
+                print("\nPing Results:")
+                print("============")
+                for result in ping_results:
+                    print(f"\nTarget: {result['target']}")
+                    print(f"Success: {result['success']}")
+                    if result['success']:
+                        # Extract and print relevant ping statistics
+                        output_lines = result['output'].strip().split('\n')
+                        for line in output_lines:
+                            if any(x in line for x in ["packets transmitted", "min/avg/max", "packet loss"]):
+                                print(line)
+                    else:
+                        print(f"Error: {result['error']}")
+            else:
+                self.logger.info("Ping tests skipped (no targets specified)")
+
+            # Run iperf test if server is specified
+            if self.iperf_server:
+                step_number = 4 if self.ping_targets else 3
+                self.logger.info(f"=== Step {step_number}: Running iperf Bandwidth Test ===")
+
+                iperf_result = self.run_iperf_test()
+
+                # Print iperf results
+                print("\niperf Bandwidth Test Results:")
+                print("===========================")
+
+                if iperf_result["success"]:
+                    print(f"Protocol: {self.iperf_protocol.upper()}")
+                    print(f"Bandwidth: {iperf_result['bandwidth']} {iperf_result['bandwidth_units']}")
+
+                    if self.iperf_protocol == 'udp':
+                        print(f"Jitter: {iperf_result.get('jitter_ms', 'N/A')} ms")
+                        print(f"Packet Loss: {iperf_result.get('packet_loss_percent', 'N/A'):.2f}%")
+                        print(f"Lost/Total Packets: {iperf_result.get('lost_packets', 'N/A')}/{iperf_result.get('total_packets', 'N/A')}")
                 else:
-                    print(f"Error: {result['error']}")
+                    print(f"iperf test failed: {iperf_result.get('error', 'Unknown error')}")
+            else:
+                self.logger.info("iperf test skipped (no server specified)")
 
             # Disconnect
-            self.logger.info(f"=== Step 4: Disconnecting ===")
+            step_number = 5 if self.ping_targets and self.iperf_server else 4 if self.ping_targets or self.iperf_server else 3
+            self.logger.info(f"=== Step {step_number}: Disconnecting ===")
             disconnect_result = self.disconnect()
 
             self.logger.info("=== Wi-Fi Connection Test Complete ===")
@@ -617,12 +776,34 @@ def parse_arguments():
     parser.add_argument('--mac', required=True,
                         help='MAC address to set for the wireless interface (e.g., 00:11:22:33:44:55)')
     
-    parser.add_argument('--ping-targets', required=True,
-                        help='Comma-separated list of IP addresses or hostnames to ping')
-    
+    parser.add_argument('--ping-targets',
+                        help='Comma-separated list of IP addresses or hostnames to ping. If not specified, ping tests will be skipped.')
+
     parser.add_argument('--count', type=int, default=3,
-                        help='Number of ping packets to send to each target')
-    
+                        help='Number of ping packets to send to each target (default: 3)')
+
+    # iperf-related arguments
+    parser.add_argument('--iperf-server',
+                        help='IP address or hostname of the iperf server. If not specified, iperf tests will be skipped.')
+
+    parser.add_argument('--iperf-port', type=int, default=5201,
+                        help='Port number for iperf connection (default: 5201)')
+
+    parser.add_argument('--iperf-protocol', choices=['tcp', 'udp'], default='tcp',
+                        help='Protocol to use for iperf test (tcp or udp, default: tcp)')
+
+    parser.add_argument('--iperf-duration', type=int, default=10,
+                        help='Duration of iperf test in seconds (default: 10)')
+
+    parser.add_argument('--iperf-bandwidth', default='100M',
+                        help='Target bandwidth for UDP tests (default: 100M)')
+
+    parser.add_argument('--iperf-parallel', type=int, default=1,
+                        help='Number of parallel client threads (default: 1)')
+
+    parser.add_argument('--iperf-reverse', action='store_true',
+                        help='Run iperf test in reverse direction (upload from server)')
+
     return parser.parse_args()
 
 
@@ -634,8 +815,10 @@ def main():
     try:
         args = parse_arguments()
 
-        # Split the ping targets string into a list
-        ping_targets = args.ping_targets.split(',')
+        # Handle optional ping targets
+        ping_targets = []
+        if args.ping_targets:
+            ping_targets = args.ping_targets.split(',')
 
         # Create and run the tester
         tester = WiFiTester(
@@ -644,15 +827,42 @@ def main():
             password=args.password,
             mac=args.mac,
             ping_targets=ping_targets,
-            ping_count=args.count
+            ping_count=args.count,
+            iperf_server=args.iperf_server,
+            iperf_port=args.iperf_port,
+            iperf_protocol=args.iperf_protocol,
+            iperf_duration=args.iperf_duration,
+            iperf_bandwidth=args.iperf_bandwidth,
+            iperf_parallel=args.iperf_parallel,
+            iperf_reverse=args.iperf_reverse
         )
 
         print(f"Starting test with the following parameters:")
         print(f"  Device: {args.device}")
         print(f"  SSID: {args.ssid}")
         print(f"  MAC Address: {args.mac}")
-        print(f"  Ping Targets: {args.ping_targets}")
-        print(f"  Ping Count: {args.count}")
+
+        # Only display ping parameters if targets are specified
+        if ping_targets:
+            print(f"  Ping Targets: {args.ping_targets}")
+            print(f"  Ping Count: {args.count}")
+        else:
+            print(f"  Ping Tests: Disabled (no targets specified)")
+
+        # Only display iperf parameters if server is specified
+        if args.iperf_server:
+            print(f"\n  iperf Server: {args.iperf_server}:{args.iperf_port}")
+            print(f"  iperf Protocol: {args.iperf_protocol.upper()}")
+            print(f"  iperf Duration: {args.iperf_duration} seconds")
+            if args.iperf_protocol == 'udp':
+                print(f"  iperf Bandwidth: {args.iperf_bandwidth}")
+            if args.iperf_parallel > 1:
+                print(f"  iperf Parallel Streams: {args.iperf_parallel}")
+            if args.iperf_reverse:
+                print(f"  iperf Direction: Reverse (upload)")
+        else:
+            print(f"\n  iperf Tests: Disabled (no server specified)")
+
         print("\nDetailed logs will be written to wifi_test.log\n")
 
         success = tester.run_test()
