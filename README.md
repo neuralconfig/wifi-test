@@ -99,7 +99,7 @@ sudo ./wifi-test-cli.py --device DEVICE --ssid SSID --password PASSWORD --mac MA
 
 ### Network Routing Options
 
-- `--vrf`: Enable VRF-like routing for the wireless interface. This creates a custom routing table for the interface to ensure all traffic (especially ping tests) goes through the wireless connection rather than the system's default route.
+- `--vrf`: Enable VRF-like routing for the wireless interface. This creates a custom routing table and policy-based routing rules to ensure all traffic through the wireless interface uses the proper routes. Recommended for all ping tests, regardless of whether targets are in the same subnet or different subnets.
 
 ### Examples
 
@@ -113,9 +113,9 @@ Connection test with ping:
 sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 192.168.37.1,192.168.37.252 --count 3
 ```
 
-Connection test with VRF-like routing (useful for ping tests to different subnets):
+Connection test with VRF-like routing (recommended for all ping tests):
 ```bash
-sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 10.0.0.1,8.8.8.8 --vrf
+sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 10.0.0.1,192.168.1.1,8.8.8.8 --vrf
 ```
 
 Connection test with iperf TCP test:
@@ -177,8 +177,8 @@ If you're having trouble with connections, check the log file for detailed infor
 6. Verifies connection status and reports signal strength
 7. Optional: Sets up VRF-like routing if `--vrf` is specified
    - Creates a custom routing table for the wireless interface
-   - Configures policy-based routing to ensure traffic from the interface uses this table
-   - Enables ping tests to reach targets outside the wireless network's subnet
+   - Configures policy-based routing to ensure traffic from and to the interface uses this table
+   - Enables ping tests to reach targets both inside and outside the wireless network's subnet
 8. Optional: Pings each target in the list using the wireless interface
 9. Optional: Runs bandwidth tests using iperf3
    - Binds to the Wi-Fi interface's IP to ensure tests use the wireless connection
@@ -202,7 +202,8 @@ If ping tests fail:
 
 1. Verify that the target IPs are reachable from the network you're connecting to
 2. Check if the ping targets are in a different subnet from your wireless connection
-   - If pinging across subnets, try using the `--vrf` option to set up proper routing
+   - When pinging targets in different subnets, use the `--vrf` option to set up proper routing
+   - The `--vrf` option also works for same-subnet targets and is recommended for all ping tests
 3. Ensure there are no firewall rules blocking ICMP traffic
 
 ### Password Authentication Issues
