@@ -1,6 +1,6 @@
 # Wi-Fi Connection Test Tool
 
-A Python script for testing Wi-Fi connections with specific parameters. This tool allows you to:
+A Python package for testing Wi-Fi connections with specific parameters. This tool allows you to:
 
 - Connect to a specified SSID with password
 - Set a custom MAC address
@@ -31,12 +31,34 @@ A Python script for testing Wi-Fi connections with specific parameters. This too
 
 ## Installation
 
+### From Source
+
 Clone the repository:
 
 ```bash
 git clone https://github.com/neuralconfig/wifi-test.git
 cd wifi-test
-chmod +x wifi-test.py
+```
+
+Install the package:
+
+```bash
+pip install .
+```
+
+Or install in development mode:
+
+```bash
+pip install -e .
+```
+
+### Direct Usage
+
+You can also use the script directly without installation:
+
+```bash
+cd wifi-test
+chmod +x wifi-test-cli.py
 ```
 
 ## Usage
@@ -44,7 +66,13 @@ chmod +x wifi-test.py
 The script must be run with root privileges:
 
 ```bash
-sudo ./wifi-test.py --device DEVICE --ssid SSID --password PASSWORD --mac MAC_ADDRESS [OPTIONS]
+sudo wifi-test --device DEVICE --ssid SSID --password PASSWORD --mac MAC_ADDRESS [OPTIONS]
+```
+
+Or if you didn't install the package:
+
+```bash
+sudo ./wifi-test-cli.py --device DEVICE --ssid SSID --password PASSWORD --mac MAC_ADDRESS [OPTIONS]
 ```
 
 ### Required Arguments
@@ -73,40 +101,57 @@ sudo ./wifi-test.py --device DEVICE --ssid SSID --password PASSWORD --mac MAC_AD
 
 Basic connection test (no ping or iperf):
 ```bash
-sudo ./wifi-test.py --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55
+sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55
 ```
 
 Connection test with ping:
 ```bash
-sudo ./wifi-test.py --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 192.168.37.1,192.168.37.252 --count 3
+sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 192.168.37.1,192.168.37.252 --count 3
 ```
 
 Connection test with iperf TCP test:
 ```bash
-sudo ./wifi-test.py --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --iperf-server 192.168.37.1 --iperf-duration 30
+sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --iperf-server 192.168.37.1 --iperf-duration 30
 ```
 
 Connection test with iperf UDP test:
 ```bash
-sudo ./wifi-test.py --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --iperf-server 192.168.37.1 --iperf-protocol udp --iperf-bandwidth 50M
+sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --iperf-server 192.168.37.1 --iperf-protocol udp --iperf-bandwidth 50M
 ```
 
 Comprehensive test with ping and iperf:
 ```bash
-sudo ./wifi-test.py --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 192.168.37.1,192.168.37.252 --iperf-server 192.168.37.1 --iperf-protocol tcp --iperf-duration 20 --iperf-parallel 4
+sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 192.168.37.1,192.168.37.252 --iperf-server 192.168.37.1 --iperf-protocol tcp --iperf-duration 20 --iperf-parallel 4
+```
+
+## Package Structure
+
+The package is organized as follows:
+
+```
+wifitest/
+├── __init__.py              # Package initialization
+├── __main__.py              # For running as a module
+├── wifi_tester.py           # Main WiFiTester class
+├── interface.py             # WiFi interface management
+├── network.py               # Network connection management
+├── testing.py               # Network testing (ping, iperf)
+└── utils/
+    ├── __init__.py          # Utils initialization
+    ├── command.py           # Command execution utilities
+    └── logging_setup.py     # Logging configuration
 ```
 
 ## Logging and Debugging
 
 The script provides detailed logging to help troubleshoot connection issues:
 
-- All logs are written to `wifi_test.log` in the current directory
+- All logs are written to `wifi_test.log` in the current directory (configurable with `--log-file`)
 - Console output includes the most important status messages
 - Debug level logging captures all commands, outputs, and connection details
 - Signal strength and network details are logged when available
 
 If you're having trouble with connections, check the log file for detailed information about what's happening during each step of the connection process.
-
 
 ## How It Works
 
