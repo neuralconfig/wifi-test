@@ -269,11 +269,29 @@ network={{
             ])
             self.logger.debug(f"wpa_cli status: {wpa_status['stdout']}")
 
-            # Immediately fail on specific authentication failure indicators
+            # Immediately fail on specific authentication failure indicators or handshake in progress too long
             auth_fail_indicators = [
                 "WRONG_KEY", "HANDSHAKE_FAILED", "4WAY_HANDSHAKE_FAILED",
-                "ASSOCIATION_REJECT", "AUTHENTICATION_FAILED"
+                "ASSOCIATION_REJECT", "AUTHENTICATION_FAILED", "DISCONNECTED"
             ]
+
+            # If we see a 4-way handshake, wait and check if we get COMPLETED state
+            if "4WAY_HANDSHAKE" in wpa_status["stdout"]:
+                self.logger.debug("4-way handshake in progress, waiting for completion...")
+                # Wait a moment for handshake to complete
+                time.sleep(2)
+
+                # Check status again to see if handshake completed
+                wpa_status_after = self.run_command([
+                    "wpa_cli", "-i", self.device, "status"
+                ])
+                self.logger.debug(f"wpa_cli status after wait: {wpa_status_after['stdout']}")
+
+                # If still in handshake or disconnected, it's likely a password failure
+                if "4WAY_HANDSHAKE" in wpa_status_after["stdout"] or "DISCONNECTED" in wpa_status_after["stdout"]:
+                    self.logger.error("Authentication failed - 4-way handshake did not complete")
+                    auth_failure = True
+                    break
 
             if any(indicator in wpa_status["stdout"] for indicator in auth_fail_indicators):
                 self.logger.error(f"WPA authentication failure detected in status output")
@@ -297,10 +315,15 @@ network={{
             iw_result = self.run_command(["iw", "dev", self.device, "link"])
             self.logger.debug(f"iw dev link: {iw_result['stdout']}")
 
-            if "Connected to" in iw_result["stdout"]:
-                self.logger.info(f"Successfully associated with AP: {iw_result['stdout']}")
-                # If we see successful connection, return true to proceed with DHCP
+            # Check for both physical connection and authentication success
+            if "Connected to" in iw_result["stdout"] and "COMPLETED" in wpa_status["stdout"]:
+                self.logger.info(f"Successfully associated with AP and authenticated: {iw_result['stdout']}")
+                # If we see successful connection and authentication, return true to proceed with DHCP
                 return True
+
+            # If we have connection but not COMPLETED state, just note it and continue trying
+            if "Connected to" in iw_result["stdout"] and "COMPLETED" not in wpa_status["stdout"]:
+                self.logger.debug("Connected to AP but authentication not yet complete")
 
             # Short wait between checks to catch early failures
             time.sleep(2)
@@ -338,10 +361,21 @@ network={{
 
         # Final connection check before proceeding
         iw_final = self.run_command(["iw", "dev", self.device, "link"])
+        wpa_final = self.run_command(["wpa_cli", "-i", self.device, "status"])
+
+        # Check both connection and authentication status
         if "Connected to" not in iw_final["stdout"]:
             self.logger.warning("Could not confirm AP association")
             # Return false to avoid trying DHCP if we can't confirm association
             return False
+
+        # Check if we have a successful authentication
+        if "COMPLETED" not in wpa_final["stdout"]:
+            self.logger.error("Connection established but authentication not completed")
+            self.logger.error("This is likely due to an incorrect password")
+            return False
+
+        self.logger.info("Connection and authentication successful, proceeding with DHCP")
 
         # Get IP address via DHCP
         self.logger.info("Obtaining IP address via DHCP...")
