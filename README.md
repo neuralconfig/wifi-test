@@ -97,6 +97,10 @@ sudo ./wifi-test-cli.py --device DEVICE --ssid SSID --password PASSWORD --mac MA
 - `--iperf-parallel`: Number of parallel client threads (default: 1)
 - `--iperf-reverse`: If specified, run iperf test in reverse direction (upload from server)
 
+### Network Routing Options
+
+- `--vrf`: Enable VRF-like routing for the wireless interface. This creates a custom routing table for the interface to ensure all traffic (especially ping tests) goes through the wireless connection rather than the system's default route.
+
 ### Examples
 
 Basic connection test (no ping or iperf):
@@ -107,6 +111,11 @@ sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:
 Connection test with ping:
 ```bash
 sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 192.168.37.1,192.168.37.252 --count 3
+```
+
+Connection test with VRF-like routing (useful for ping tests to different subnets):
+```bash
+sudo wifi-test --device wlp58s0 --ssid wifitest --password 12345678 --mac 00:11:22:33:44:55 --ping-targets 10.0.0.1,8.8.8.8 --vrf
 ```
 
 Connection test with iperf TCP test:
@@ -166,12 +175,16 @@ If you're having trouble with connections, check the log file for detailed infor
    - Reports authentication failures with error codes for automation
 5. Obtains an IP address via DHCP
 6. Verifies connection status and reports signal strength
-7. Optional: Pings each target in the list using the wireless interface
-8. Optional: Runs bandwidth tests using iperf3
+7. Optional: Sets up VRF-like routing if `--vrf` is specified
+   - Creates a custom routing table for the wireless interface
+   - Configures policy-based routing to ensure traffic from the interface uses this table
+   - Enables ping tests to reach targets outside the wireless network's subnet
+8. Optional: Pings each target in the list using the wireless interface
+9. Optional: Runs bandwidth tests using iperf3
    - Binds to the Wi-Fi interface's IP to ensure tests use the wireless connection
    - Supports both TCP and UDP tests with customizable parameters
    - Reports detailed bandwidth, jitter, and packet loss statistics
-9. Disconnects from the network and cleans up
+10. Disconnects from the network and cleans up (including routing tables if VRF was used)
 
 ## Troubleshooting
 
@@ -184,6 +197,13 @@ If the connection fails:
    - Authentication failures are detected early and reported with specific error messages
 4. Confirm that the MAC address is in the correct format
 5. Make sure all required tools are installed
+
+If ping tests fail:
+
+1. Verify that the target IPs are reachable from the network you're connecting to
+2. Check if the ping targets are in a different subnet from your wireless connection
+   - If pinging across subnets, try using the `--vrf` option to set up proper routing
+3. Ensure there are no firewall rules blocking ICMP traffic
 
 ### Password Authentication Issues
 
