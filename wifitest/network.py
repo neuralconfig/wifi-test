@@ -199,8 +199,8 @@ network={{
             if "Connected to" in iw_result["stdout"] and "COMPLETED" in wpa_status["stdout"]:
                 if self.logger:
                     self.logger.info(f"Successfully associated with AP and authenticated: {iw_result['stdout']}")
-                # If we see successful connection and authentication, return true to proceed with DHCP
-                return True
+                # If we see successful connection and authentication, break the loop to proceed with DHCP
+                break
 
             # If we have connection but not COMPLETED state, just note it and continue trying
             if "Connected to" in iw_result["stdout"] and "COMPLETED" not in wpa_status["stdout"]:
