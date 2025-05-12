@@ -522,6 +522,15 @@ network={{
                 "ip", "rule", "add", "from", device_ip, "table", "wifi-test"
             ], logger=self.logger)
 
+            # Add rule to use table wifi-test for all traffic going out this interface
+            # This ensures same-subnet traffic works properly with ARP
+            oif_rule = run_command([
+                "ip", "rule", "add", "oif", self.device, "table", "wifi-test"
+            ], logger=self.logger)
+
+            if oif_rule["success"] and self.logger:
+                self.logger.info(f"Added interface-based routing rule for {self.device}")
+
             # Add route for local subnet
             run_command([
                 "ip", "route", "add", subnet, "dev", self.device, "table", "wifi-test"
@@ -575,13 +584,21 @@ network={{
                     device_ip = ip_match.group(1)
 
             if device_ip:
-                # Remove the rule
+                # Remove the source IP-based rule
                 rule_del = run_command([
                     "ip", "rule", "del", "from", device_ip, "table", "wifi-test"
                 ], logger=self.logger)
 
                 if rule_del["success"] and self.logger:
-                    self.logger.info(f"Removed custom routing rule for {device_ip}")
+                    self.logger.info(f"Removed source IP routing rule for {device_ip}")
+
+            # Remove the interface-based rule
+            oif_rule_del = run_command([
+                "ip", "rule", "del", "oif", self.device, "table", "wifi-test"
+            ], logger=self.logger)
+
+            if oif_rule_del["success"] and self.logger:
+                self.logger.info(f"Removed interface-based routing rule for {self.device}")
 
             # Flush the routing table
             route_flush = run_command([
