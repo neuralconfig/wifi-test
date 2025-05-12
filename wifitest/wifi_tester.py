@@ -22,7 +22,8 @@ class WiFiTester:
                  iperf_protocol: str = 'tcp', iperf_duration: int = 10,
                  iperf_bandwidth: str = '100M', iperf_parallel: int = 1,
                  iperf_reverse: bool = False,
-                 log_file: str = "wifi_test.log"):
+                 log_file: str = "wifi_test.log",
+                 vrf: bool = False):
         """
         Initialize the Wi-Fi tester.
         
@@ -41,6 +42,7 @@ class WiFiTester:
             iperf_parallel: Number of parallel client threads
             iperf_reverse: Run iperf test in reverse direction
             log_file: Path to the log file
+            vrf: Enable VRF-like routing for the wireless interface
         """
         self.device = device
         self.ssid = ssid
@@ -57,13 +59,16 @@ class WiFiTester:
         self.iperf_bandwidth = iperf_bandwidth
         self.iperf_parallel = iperf_parallel
         self.iperf_reverse = iperf_reverse
+
+        # VRF routing feature
+        self.vrf = vrf
         
         # Setup logging
         self.logger = setup_logging(log_file)
         
         # Initialize managers
         self.interface_manager = InterfaceManager(device, mac, self.logger)
-        self.network_manager = NetworkManager(device, ssid, password, self.logger)
+        self.network_manager = NetworkManager(device, ssid, password, self.logger, vrf=self.vrf)
         self.network_tester = NetworkTester(
             device, ping_targets, ping_count,
             iperf_server, iperf_port, iperf_protocol,

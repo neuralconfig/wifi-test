@@ -59,6 +59,9 @@ def parse_arguments():
     parser.add_argument('--log-file', default='wifi_test.log',
                         help='Path to the log file (default: wifi_test.log)')
 
+    parser.add_argument('--vrf', action='store_true',
+                        help='Enable VRF-like routing for the wireless interface to ensure traffic goes through it')
+
     return parser.parse_args()
 
 
@@ -90,13 +93,15 @@ def main():
             iperf_bandwidth=args.iperf_bandwidth,
             iperf_parallel=args.iperf_parallel,
             iperf_reverse=args.iperf_reverse,
-            log_file=args.log_file
+            log_file=args.log_file,
+            vrf=args.vrf
         )
 
         print(f"Starting test with the following parameters:")
         print(f"  Device: {args.device}")
         print(f"  SSID: {args.ssid}")
         print(f"  MAC Address: {args.mac}")
+        print(f"  VRF Routing: {'Enabled' if args.vrf else 'Disabled'}")
 
         # Only display ping parameters if targets are specified
         if ping_targets:
