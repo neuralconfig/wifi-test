@@ -266,6 +266,28 @@ network={{
             ])
             self.logger.debug(f"wpa_cli status: {wpa_status['stdout']}")
 
+            # Check for authentication failures in wpa_cli output
+            if "DISCONNECTED" in wpa_status["stdout"]:
+                # Check wpa_supplicant logs for error messages
+                wpa_log = self.run_command(["grep", "wpa_supplicant", "/var/log/syslog"])
+                self.logger.debug(f"wpa_supplicant syslog entries: {wpa_log['stdout']}")
+
+                # Check for common authentication failure patterns
+                if any(error in wpa_log["stdout"] for error in [
+                    "authentication with", "failed", "4-Way Handshake failed",
+                    "WRONG_KEY", "WPA:", "reason=15", "reason=3"
+                ]):
+                    self.logger.error("Authentication failed - Incorrect password")
+                    return False
+
+                # Alternative check with direct dmesg output
+                dmesg = self.run_command(["dmesg", "|", "grep", "wpa"])
+                if any(error in dmesg["stdout"] for error in [
+                    "authentication with", "failed", "4-Way Handshake failed"
+                ]):
+                    self.logger.error("Authentication failed - Incorrect password detected in dmesg")
+                    return False
+
             # Check if connected via iw
             iw_result = self.run_command(["iw", "dev", self.device, "link"])
             self.logger.debug(f"iw dev link: {iw_result['stdout']}")
@@ -273,6 +295,18 @@ network={{
             if "Connected to" in iw_result["stdout"]:
                 self.logger.info(f"Successfully associated with AP: {iw_result['stdout']}")
                 break
+
+            # Additional authentication failure check
+            wpa_auth_check = self.run_command([
+                "journalctl", "-u", "wpa_supplicant", "--no-pager", "-n", "50"
+            ])
+
+            if any(error in wpa_auth_check["stdout"] for error in [
+                "authentication with", "failed", "4-Way Handshake failed",
+                "WRONG_KEY", "WPA:", "reason=15", "reason=3"
+            ]):
+                self.logger.error("Authentication failed - Incorrect password detected in journal")
+                return False
 
             if attempt == 3 and "Connected to" not in iw_result["stdout"]:
                 self.logger.warning("Could not confirm AP association after 3 attempts")
@@ -424,9 +458,66 @@ network={{
                 self.logger.error("Failed to set MAC address, aborting test")
                 return False
 
-            # Connect to Wi-Fi
+            # Connect to Wi-Fi with password retry
             self.logger.info(f"=== Step 2: Connecting to SSID {self.ssid} ===")
-            if not self.connect_to_wifi():
+
+            # Flag to track if incorrect password was detected
+            password_incorrect = False
+            max_retries = 3
+            retry_count = 0
+
+            while retry_count < max_retries:
+                if retry_count > 0:
+                    self.logger.info(f"Retry attempt {retry_count}/{max_retries-1}")
+
+                connection_result = self.connect_to_wifi()
+
+                if connection_result:
+                    # Connection successful
+                    break
+
+                # Check if it's likely a password issue by checking the log file
+                with open("wifi_test.log", "r") as log_file:
+                    log_content = log_file.read()
+
+                    # Check if the log contains authentication failure messages
+                    if any(error in log_content for error in [
+                        "Authentication failed - Incorrect password",
+                        "4-Way Handshake failed",
+                        "WRONG_KEY",
+                        "authentication with"
+                    ]):
+                        password_incorrect = True
+                        self.logger.error(f"Password authentication failed for SSID: {self.ssid}")
+
+                        # Prompt for a new password
+                        print(f"\n⚠️  Authentication failed. The password for '{self.ssid}' appears to be incorrect.")
+                        new_password = input("Enter the correct password (or press Enter to abort): ")
+
+                        if not new_password:
+                            self.logger.error("User aborted after password failure")
+                            return False
+
+                        # Update the password and try again
+                        self.password = new_password
+                        self.logger.info(f"Retrying with new password")
+                        retry_count += 1
+
+                        # Make sure any existing connection attempts are cleaned up
+                        self.disconnect()
+                        time.sleep(2)
+                    else:
+                        # Not a password issue, some other connection problem
+                        self.logger.error("Failed to connect to Wi-Fi network, but not due to incorrect password")
+                        return False
+
+            # If we've exhausted all retries and still have password issues
+            if retry_count >= max_retries and password_incorrect:
+                self.logger.error(f"Failed to connect after {max_retries} password attempts")
+                print(f"\n❌ Failed to connect to '{self.ssid}' after {max_retries} password attempts.")
+                return False
+
+            if not connection_result:
                 self.logger.error("Failed to connect to Wi-Fi network, aborting test")
                 return False
 

@@ -41,23 +41,57 @@ def parse_arguments():
 def main():
     """Main function to simulate the Wi-Fi test tool."""
     args = parse_arguments()
-    
+
     # Split the ping targets string into a list
     ping_targets = args.ping_targets.split(',')
-    
+
     print(f"\nWi-Fi Connection Test Tool Demo (Simulation)")
     print(f"============================================\n")
-    
+
     # Simulate setting MAC address
     print(f"[1/4] Setting MAC address of {args.device} to {args.mac}")
     time.sleep(1)
     print(f"✓ MAC address set successfully\n")
-    
-    # Simulate connecting to Wi-Fi
+
+    # Test passwords that trigger incorrect password detection
+    test_passwords = ["test123", "password", "incorrect"]
+
+    # Simulate connecting to Wi-Fi with password check
     print(f"[2/4] Connecting to SSID '{args.ssid}' using device {args.device}")
-    time.sleep(2)
-    print(f"✓ Successfully connected to network '{args.ssid}'\n")
-    
+
+    if args.password in test_passwords:
+        # Simulate incorrect password detection
+        time.sleep(2)
+        print(f"⚠️  Authentication failed. The password for '{args.ssid}' appears to be incorrect.")
+
+        # Prompt for a new password
+        max_retries = 3
+        retry_count = 0
+
+        while retry_count < max_retries:
+            new_password = input("Enter the correct password (or press Enter to abort): ")
+
+            if not new_password:
+                print("User aborted after password failure")
+                return 1
+
+            # Check if the new password is valid (not in our test list)
+            if new_password in test_passwords:
+                print(f"Authentication failed. The password for '{args.ssid}' appears to be incorrect.")
+                retry_count += 1
+                if retry_count >= max_retries:
+                    print(f"\n❌ Failed to connect to '{args.ssid}' after {max_retries} password attempts.")
+                    return 1
+            else:
+                # Valid password
+                time.sleep(1)
+                print(f"✓ Successfully connected to network '{args.ssid}' with the new password\n")
+                break
+    else:
+        # Simulate successful connection
+        time.sleep(2)
+        print(f"✓ Successfully connected to network '{args.ssid}'\n")
+
     # Simulate pinging targets
     print(f"[3/4] Pinging targets from interface {args.device}")
     for i, target in enumerate(ping_targets):
@@ -65,14 +99,14 @@ def main():
         time.sleep(0.5)
         print(f"    {args.count} packets transmitted, {args.count} received, 0% packet loss")
         print(f"    min/avg/max = 1.123/2.234/3.345 ms\n")
-    
+
     # Simulate disconnecting
     print(f"[4/4] Disconnecting from network '{args.ssid}'")
     time.sleep(1)
     print(f"✓ Successfully disconnected from network\n")
-    
+
     print(f"Test completed successfully!")
-    
+
     return 0
 
 

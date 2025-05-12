@@ -15,6 +15,8 @@ A Python script for testing Wi-Fi connections with specific parameters. This too
 - Support for hidden networks
 - Signal strength reporting
 - Verification of successful connection
+- Incorrect password detection with interactive retry
+- Authentication failure diagnosis
 
 ## Requirements
 
@@ -84,6 +86,8 @@ For testing without root privileges or actual hardware, use the `test_demo.py` s
    - Generates a configuration with scanning for hidden networks enabled
    - Uses debug mode for more verbose output
    - Attempts multiple connection strategies if needed
+   - Detects authentication failures and incorrect passwords
+   - Allows interactive retries with new passwords if authentication fails
 5. Obtains an IP address via DHCP
 6. Verifies connection status and reports signal strength
 7. Pings each target in the list using the wireless interface
@@ -96,8 +100,19 @@ If the connection fails:
 1. Check `wifi_test.log` for detailed error messages
 2. Verify that the wireless interface exists and is working
 3. Ensure you have the correct SSID and password
+   - The tool will detect incorrect passwords and prompt for retries
+   - You can enter the correct password when prompted to retry the connection
 4. Confirm that the MAC address is in the correct format
 5. Make sure all required tools are installed
+
+### Password Authentication Issues
+
+The tool specifically checks for authentication failures that indicate incorrect passwords:
+
+- If an authentication failure is detected, you'll be prompted to enter the correct password
+- You can retry up to 3 times with different passwords
+- If you press Enter without typing a password, the test will abort
+- The tool searches system logs and wpa_supplicant output to diagnose authentication failures
 
 ## License
 
