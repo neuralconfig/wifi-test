@@ -31,3 +31,6 @@ temp/
 
 # Claude instructions
 CLAUDE.md
+
+# Temporary configuration files
+wpa_temp.conf
